@@ -2,8 +2,10 @@ import argparse
 import time
 import math
 import numpy as np
+import os
 import torch
 import torch.nn as nn
+import sys
 from torch.autograd import Variable
 
 import data
@@ -50,8 +52,8 @@ parser.add_argument('--cuda', action='store_false',
                     help='use CUDA')
 parser.add_argument('--log-interval', type=int, default=200, metavar='N',
                     help='report interval')
-randomhash = ''.join(str(time.time()).split('.'))
-parser.add_argument('--save', type=str,  default=randomhash+'.pt',
+runid = str(time.time()).split('.')[0]
+parser.add_argument('--save', type=str,  default=runid+'.pt',
                     help='path to save the final model')
 parser.add_argument('--alpha', type=float, default=2,
                     help='alpha L2 regularization on RNN activation (alpha = 0 means no regularization)')
@@ -65,6 +67,10 @@ parser.add_argument('--optimizer', type=str,  default='sgd',
                     help='optimizer to use (sgd, adam)')
 parser.add_argument('--when', nargs="+", type=int, default=[-1],
                     help='When (which epochs) to divide the learning rate by 10 - accepts multiple')
+parser.add_argument('--max_vocab', type=int, default=sys.maxsize, help='Maximum Vocab to consider.')
+parser.add_argument('--unk_token', type=str, default='<unk>', help='UNK token to consider.')
+parser.add_argument('--checkpoint_dir', type=str,  default=None, help='Checkpoint Directory path.')
+parser.add_argument('--checkpoint', action='store_true', help='Store each checkpoint')
 args = parser.parse_args()
 args.tied = True
 
@@ -77,9 +83,20 @@ if torch.cuda.is_available():
     else:
         torch.cuda.manual_seed(args.seed)
 
+# Checkpoint dir
+if args.checkpoint:
+    checkpoint_dir = args.checkpoint_dir or os.path.join(args.data, 'checkpoints')
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir)
+
 ###############################################################################
 # Load data
 ###############################################################################
+
+def checkpoint(checkpoint_dir, epoch, val_loss):
+    filename = 'checkpoint_%s_epoch_%d_val_loss_%5.3f.pt' % (runid, epoch, val_loss)
+    checkpoint_file = os.path.join(checkpoint_dir, filename)
+    model_save(checkpoint_file)
 
 def model_save(fn):
     with open(fn, 'wb') as f:
@@ -90,16 +107,19 @@ def model_load(fn):
     with open(fn, 'rb') as f:
         model, criterion, optimizer = torch.load(f)
 
-import os
 import hashlib
-fn = 'corpus.{}.data'.format(hashlib.md5(args.data.encode()).hexdigest())
+print('Using Dataset: (%s) with %s vocab' % (args.data, ('FULL' if args.max_vocab == sys.maxsize else args.max_vocab)))
+fn = 'corpus.{}.data'.format(hashlib.md5((args.data + '-' + str(args.max_vocab)).encode()).hexdigest())
 if os.path.exists(fn):
     print('Loading cached dataset...')
     corpus = torch.load(fn)
 else:
     print('Producing dataset...')
-    corpus = data.Corpus(args.data)
+    corpus = data.Corpus(args.data, args.max_vocab, args.unk_token)
     torch.save(corpus, fn)
+
+print('Dataset: %s' % args.data)
+print('Vocab Size: %d' % len(corpus.dictionary))
 
 eval_batch_size = 10
 test_batch_size = 1
@@ -153,7 +173,6 @@ print('Model total parameters:', total_params)
 ###############################################################################
 # Training code
 ###############################################################################
-
 def evaluate(data_source, batch_size=10):
     # Turn on evaluation mode which disables dropout.
     model.eval()
@@ -252,6 +271,9 @@ try:
               epoch, (time.time() - epoch_start_time), val_loss, math.exp(val_loss), val_loss / math.log(2)))
             print('-' * 89)
 
+            if args.checkpoint:
+                checkpoint(checkpoint_dir, epoch, val_loss2)
+
             if val_loss2 < stored_loss:
                 model_save(args.save)
                 print('Saving Averaged!')
@@ -267,6 +289,9 @@ try:
                 'valid ppl {:8.2f} | valid bpc {:8.3f}'.format(
               epoch, (time.time() - epoch_start_time), val_loss, math.exp(val_loss), val_loss / math.log(2)))
             print('-' * 89)
+
+            if args.checkpoint:
+                checkpoint(checkpoint_dir, epoch, val_loss)
 
             if val_loss < stored_loss:
                 model_save(args.save)

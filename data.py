@@ -1,15 +1,17 @@
 import os
 import torch
-
+import sys
 from collections import Counter
 
 
 class Dictionary(object):
-    def __init__(self):
+    def __init__(self, max_vocab_size=sys.maxsize, unk_token='<unk>'):
         self.word2idx = {}
         self.idx2word = []
         self.counter = Counter()
         self.total = 0
+        self.unk_token = unk_token
+        self.max_vocab_size = max_vocab_size
 
     def add_word(self, word):
         if word not in self.word2idx:
@@ -23,10 +25,29 @@ class Dictionary(object):
     def __len__(self):
         return len(self.idx2word)
 
+    def prune(self):
+        top_n_idx2word = []
+        top_n_word2idx = {}
+        top_n_counter = Counter()
+        self.total = 0
+
+        for new_idx, (old_idx, counter) in enumerate(self.counter.most_common(self.max_vocab_size)):
+            word = self.idx2word[old_idx]
+            top_n_idx2word.append(word)
+            top_n_word2idx[word] = new_idx
+            self.total += 1
+            top_n_counter[new_idx] = self.counter[old_idx]
+
+        self.counter = top_n_counter
+        self.idx2word = top_n_idx2word
+        self.word2idx = top_n_word2idx
+
+        if self.unk_token not in self.word2idx:
+            self.word2idx[self.unk_token] = len(self.idx2word) - 1
 
 class Corpus(object):
-    def __init__(self, path):
-        self.dictionary = Dictionary()
+    def __init__(self, path, max_vocab_size=sys.maxsize, unk_token='<unk>'):
+        self.dictionary = Dictionary(max_vocab_size, unk_token)
         self.train = self.tokenize(os.path.join(path, 'train.txt'))
         self.valid = self.tokenize(os.path.join(path, 'valid.txt'))
         self.test = self.tokenize(os.path.join(path, 'test.txt'))
@@ -43,6 +64,11 @@ class Corpus(object):
                 for word in words:
                     self.dictionary.add_word(word)
 
+        unk_id = -1
+        if len(self.dictionary) > self.dictionary.max_vocab_size:
+            self.dictionary.prune()
+            unk_id = self.dictionary.word2idx[self.dictionary.unk_token]
+
         # Tokenize file content
         with open(path, 'r') as f:
             ids = torch.LongTensor(tokens)
@@ -50,7 +76,6 @@ class Corpus(object):
             for line in f:
                 words = line.split() + ['<eos>']
                 for word in words:
-                    ids[token] = self.dictionary.word2idx[word]
+                    ids[token] = self.dictionary.word2idx.get(word, unk_id)
                     token += 1
-
         return ids
