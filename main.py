@@ -92,8 +92,9 @@ if args.checkpoint:
 # Load data
 ###############################################################################
 
-def checkpoint(checkpoint_dir, epoch, val_loss):
-    filename = 'checkpoint_%s_epoch_%d_val_loss_%5.3f.pt' % (runid, epoch, val_loss)
+def checkpoint(checkpoint_dir, vocab, n_hid, n_layers, epoch, val_loss):
+    filename = 'checkpoint_%s_vocab_%d_nhid_%d_nlayers_%d_epoch_%d_val_loss_%5.3f.pt' \
+                    % (runid, vocab, n_hid, n_layers, epoch, val_loss)
     checkpoint_file = os.path.join(checkpoint_dir, filename)
     model_save(checkpoint_file)
 
@@ -271,7 +272,7 @@ try:
             print('-' * 89)
 
             if args.checkpoint:
-                checkpoint(checkpoint_dir, epoch, val_loss2)
+                checkpoint(checkpoint_dir, ntokens, args.nhid, args.nlayers, epoch, val_loss2)
 
             if val_loss2 < stored_loss:
                 model_save(args.save)
@@ -290,7 +291,7 @@ try:
             print('-' * 89)
 
             if args.checkpoint:
-                checkpoint(checkpoint_dir, epoch, val_loss)
+                checkpoint(checkpoint_dir, ntokens, args.nhid, args.nlayers, epoch, val_loss)
 
             if val_loss < stored_loss:
                 model_save(args.save)
