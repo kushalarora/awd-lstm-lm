@@ -22,6 +22,17 @@ class Dictionary(object):
         self.total += 1
         return self.word2idx[word]
 
+    def build(self, path):
+        assert os.path.exists(path)
+        # Add words to the dictionary
+        with open(path, 'r') as f:
+            tokens = 0
+            for line in f:
+                words = line.split() + ['<eos>']
+                tokens += len(words)
+                for word in words:
+                    self.add_word(word)
+
     def __len__(self):
         return len(self.idx2word)
 
@@ -48,12 +59,17 @@ class Dictionary(object):
 class Corpus(object):
     def __init__(self, path, max_vocab_size=sys.maxsize, unk_token='<unk>'):
         self.dictionary = Dictionary(max_vocab_size, unk_token)
+        self.dictionary.build(os.path.join(path, 'train.txt'))
+        if len(self.dictionary) > self.dictionary.max_vocab_size:
+            self.dictionary.prune()
+
         self.train = self.tokenize(os.path.join(path, 'train.txt'))
         self.valid = self.tokenize(os.path.join(path, 'valid.txt'))
         self.test = self.tokenize(os.path.join(path, 'test.txt'))
 
     def tokenize(self, path):
         """Tokenizes a text file."""
+
         assert os.path.exists(path)
         # Add words to the dictionary
         with open(path, 'r') as f:
@@ -61,13 +77,8 @@ class Corpus(object):
             for line in f:
                 words = line.split() + ['<eos>']
                 tokens += len(words)
-                for word in words:
-                    self.dictionary.add_word(word)
 
-        unk_id = -1
-        if len(self.dictionary) > self.dictionary.max_vocab_size:
-            self.dictionary.prune()
-            unk_id = self.dictionary.word2idx[self.dictionary.unk_token]
+        unk_id = self.dictionary.word2idx.get(self.dictionary.unk_token, -1)
 
         # Tokenize file content
         with open(path, 'r') as f:
