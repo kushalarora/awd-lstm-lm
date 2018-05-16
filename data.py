@@ -90,3 +90,14 @@ class Corpus(object):
                     ids[token] = self.dictionary.word2idx.get(word, unk_id)
                     token += 1
         return ids
+
+    def tokenize_sent(self, sentence):
+        unk_id = self.dictionary.word2idx.get(self.dictionary.unk_token, -1)
+
+        words=sentence.split()
+        ids = torch.LongTensor(len(words))
+        token = 0
+        for word in words:
+            ids[token] = self.dictionary.word2idx.get(word, unk_id)
+            token += 1
+        return ids
