@@ -38,6 +38,7 @@ parser.add_argument('--nbest_in', type=str, default='data/nbest_list_example_cap
                     help='NBest input list.')
 parser.add_argument('--nbest_out', type=str, default='data/nbest_list_example_output.txt',
                     help='NBest output list.')
+parser.add_argument('--nbest', type=int, default=200, help='Number of nbest to consider.')
 parser.add_argument('--lower', action='store_true', help='Lower the sentences.')
 parser.add_argument('--report_wer', action='store_true', help='Report WER.')
 parser.add_argument('--report_bleu', action='store_true', help='Report BLEU.')
@@ -56,7 +57,7 @@ if torch.cuda.is_available():
 global model, criterion, optimizer
 with open(args.checkpoint, 'rb') as f:
     model, criterion, optimizer = torch.load(f)
-
+print("Using Model: %s\n" % args.checkpoint)
 model.eval()
 if args.model == 'QRNN':
     model.reset()
@@ -90,7 +91,7 @@ def sent_score(sent):
     target = Variable(sent[1:].view(-1))
     output, hidden = model(data, hidden)
     return float(criterion(model.decoder.weight, model.decoder.bias, output, target).data) + \
-            sum(map(lambda x: math.log(len(corpus.dictionary)) if corpus.dictionary.word2idx[corpus.dictionary.unk_token] == x else 0,
+            sum(map(lambda x: 1 if corpus.dictionary.word2idx[corpus.dictionary.unk_token] == x else 0,
                     sent.tolist()))
 
 def entropy(data_source, batch_size=1):
@@ -128,7 +129,7 @@ def nbest_score(nbest_list_input, nbest_list_output,
         input.seek(0)
         for sentences in tqdm(input, total=size):
             nbest_all.append([])
-            for idx, sentence in enumerate(sentences.split('\t')):
+            for idx, sentence in enumerate(sentences.split('\t')[:args.nbest]):
                 if len(sentence.split()) < 2:
                     if idx == 0:
                         del nbest_all[-1]
