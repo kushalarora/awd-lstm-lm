@@ -42,6 +42,7 @@ parser.add_argument('--nbest', type=int, default=200, help='Number of nbest to c
 parser.add_argument('--lower', action='store_true', help='Lower the sentences.')
 parser.add_argument('--report_wer', action='store_true', help='Report WER.')
 parser.add_argument('--report_bleu', action='store_true', help='Report BLEU.')
+parser.add_argument('--oov_penalty', action='store_true', help='OOV Penality for nbest list scoring.')
 args = parser.parse_args()
 
 args.bptt = 140
@@ -90,9 +91,10 @@ def sent_score(sent):
     data = Variable(sent[:-1].unsqueeze(1), volatile=True)
     target = Variable(sent[1:].view(-1))
     output, hidden = model(data, hidden)
-    return float(criterion(model.decoder.weight, model.decoder.bias, output, target).data) + \
-            sum(map(lambda x: 1 if corpus.dictionary.word2idx[corpus.dictionary.unk_token] == x else 0,
-                    sent.tolist()))
+    loss = float(criterion(model.decoder.weight, model.decoder.bias, output, target).data)
+    if args.oov_penalty:
+        loss += sum(map(lambda x: 1 if corpus.dictionary.word2idx[corpus.dictionary.unk_token] == x else 0, sent.tolist()))
+    return loss
 
 def entropy(data_source, batch_size=1):
     # Turn on evaluation mode which disables dropout.
