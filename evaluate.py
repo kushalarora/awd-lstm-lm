@@ -76,7 +76,8 @@ if os.path.exists(fn):
     corpus = torch.load(fn)
 else:
     print('Producing dataset...')
-    corpus = data.Corpus(args.data, args.max_vocab, args.unk_token)
+    corpus = data.Corpus(args.data, args.max_vocab)
+    torch.save(corpus, fn)
 
 print('Dataset: %s' % args.data)
 print('Vocab Size: %d' % len(corpus.dictionary))
@@ -113,12 +114,9 @@ def entropy(data_source, batch_size=1):
 def log_perplexity(data_source, batch_size=1):
     return entropy(data_source, batch_size)/len(data_source)
 
-def contrastive_log_perplexity(test, test_distorted):
-    true_entropy = entropy(test)
-    print("True Entropy: %5.2f", true_entropy)
+def contrastive_log_perplexity(test, test_distorted, true_entropy=None):
+    true_entropy = true_entropy or entropy(test)
     distorted_entropy = entropy(test_distorted)
-    print("Distorted Entropy: %5.2f", distorted_entropy)
-
     return (distorted_entropy - true_entropy)/len(test)
 
 def nbest_score(nbest_list_input, nbest_list_output,
@@ -129,7 +127,7 @@ def nbest_score(nbest_list_input, nbest_list_output,
 
         size=len(input.readlines())
         input.seek(0)
-        for sentences in tqdm(input, total=size):
+        for sentences in input: # tqdm(input, total=size):
             nbest_all.append([])
             for idx, sentence in enumerate(sentences.split('\t')[:args.nbest]):
                 if len(sentence.split()) < 2:
@@ -168,7 +166,9 @@ def nbest_score(nbest_list_input, nbest_list_output,
                  total_wer += sent_wer(nbest_batch[0][1], nbest_batch[1][1])
                  num_tokens += len(nbest_batch[0][1].split())
 
-            print('Original WER: %5.2f || Reranked Average WER: %5.2f' % (original_total_wer/original_num_tokens, total_wer/num_tokens))
+            print('$' * 89)
+            print('Original WER: %5.2f || Reranked Average WER: %5.2f' % (original_total_wer*100/original_num_tokens, total_wer*100/num_tokens))
+            print('$' * 89)
 
         if report_bleu:
             original_bleu = score_corpus([nbest_all[x][0][1] for x in range(len(nbest_all))],
@@ -177,7 +177,9 @@ def nbest_score(nbest_list_input, nbest_list_output,
             bleu = score_corpus([nbest_sorted[x][0][1] for x in range(len(nbest_sorted))],
                                 [nbest_sorted[x][1][1] for x in range(len(nbest_sorted))], 4)
 
+            print('$' * 89)
             print("Original BLEU Score: %5.2f || Reranked BLEU WER: %5.2f " % (original_bleu, bleu))
+            print('$' * 89)
 
 def sent_wer(s1, s2):
     """ Computes the Word Error Rate, defined as the edit distance between the
@@ -200,15 +202,15 @@ def sent_wer(s1, s2):
 test_data = batchify(corpus.test, 1, args)
 test_data_distorted = batchify(corpus.tokenize(os.path.join(args.data, args.distorted_file)), 1, args)
 
-loss = log_perplexity(test_data, test_batch_size)
-print('=' * 89)
-print('|  Cross Entropy {:5.2f} | Perplexity {:8.2f}'.format(loss, math.exp(loss)))
-print('=' * 89)
+original_ent = log_perplexity(test_data, test_batch_size)
+print('=' * 100)
+print('|  Cross Entropy {:5.2f} | Perplexity {:8.2f}'.format(original_ent, math.exp(original_ent)))
+print('=' * 100)
 
-loss = contrastive_log_perplexity(test_data, test_data_distorted)
-print('=' * 89)
-print('|  Contrastive Cross Entropy {:5.2f} | Contrastive Perplexity {:8.2f}'.format(loss, math.exp(loss)))
-print('=' * 89)
+contrastive_ent = contrastive_log_perplexity(test_data, test_data_distorted, original_ent)
+print('=' * 100)
+print('|  Contrastive Cross Entropy {:5.2f} | Contrastive Perplexity {:8.2f}'.format(contrastive_ent, math.exp(contrastive_ent)))
+print('=' * 100)
 
 nbest_score(args.nbest_in, args.nbest_out, lower=args.lower,
             report_wer=args.report_wer, report_bleu=args.report_bleu)
