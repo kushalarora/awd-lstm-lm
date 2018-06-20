@@ -91,7 +91,8 @@ class RNNModel(nn.Module):
         output = self.lockdrop(raw_output, self.dropout)
         outputs.append(output)
 
-        result = output.view(output.size(0)*output.size(1), output.size(2))
+        decoded = self.decoder(output.view(output.size(0)*output.size(1), output.size(2)))
+        result = decoded.view(output.size(0), output.size(1), decoded.size(1))
         if return_h:
             return result, hidden, raw_outputs, outputs
         return result, hidden

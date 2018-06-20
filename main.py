@@ -44,6 +44,8 @@ parser.add_argument('--dropoute', type=float, default=0.1,
                     help='dropout to remove words from embedding layer (0 = no dropout)')
 parser.add_argument('--wdrop', type=float, default=0.5,
                     help='amount of weight dropout to apply to the RNN hidden to hidden matrix')
+parser.add_argument('--tied', action='store_true',
+                    help='tie the word embedding and softmax weights')
 parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
 parser.add_argument('--nonmono', type=int, default=5,
@@ -72,7 +74,6 @@ parser.add_argument('--unk_token', type=str, default='<unk>', help='UNK token to
 parser.add_argument('--checkpoint_dir', type=str,  default=None, help='Checkpoint Directory path.')
 parser.add_argument('--checkpoint', action='store_true', help='Store each checkpoint')
 args = parser.parse_args()
-args.tied = True
 
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
@@ -94,8 +95,8 @@ if args.checkpoint:
 ###############################################################################
 
 def checkpoint(checkpoint_dir, vocab, n_hid, n_layers, epoch, val_loss):
-    filename = 'checkpoint_%s_vocab_%d_nhid_%d_nlayers_%d_epoch_%d_val_loss_%5.3f.pt' \
-                    % (runid, vocab, n_hid, n_layers, epoch, val_loss)
+    filename = 'checkpoint_vocab_%d_nhid_%d_nlayers_%d_epoch_%d_val_loss_%5.3f_id_%s.pt' \
+                    % (vocab, n_hid, n_layers, epoch, val_loss, runid)
     checkpoint_file = os.path.join(checkpoint_dir, filename)
     model_save(checkpoint_file)
 
@@ -132,45 +133,24 @@ test_data = batchify(corpus.test, test_batch_size, args)
 # Build the model
 ###############################################################################
 
-from splitcross import SplitCrossEntropyLoss
-criterion = None
-
 ntokens = len(corpus.dictionary)
 model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
-###
 if args.resume:
     print('Resuming model ...')
     model_load(args.resume)
-    optimizer.param_groups[0]['lr'] = args.lr
-    model.dropouti, model.dropouth, model.dropout, args.dropoute = args.dropouti, args.dropouth, args.dropout, args.dropoute
     if args.wdrop:
         from weight_drop import WeightDrop
         for rnn in model.rnns:
             if type(rnn) == WeightDrop: rnn.dropout = args.wdrop
             elif rnn.zoneout > 0: rnn.zoneout = args.wdrop
-###
-if not criterion:
-    splits = []
-    if ntokens > 500000:
-        # One Billion
-        # This produces fairly even matrix mults for the buckets:
-        # 0: 11723136, 1: 10854630, 2: 11270961, 3: 11219422
-        splits = [4200, 35000, 180000]
-    elif ntokens > 75000:
-        # WikiText-103
-        splits = [2800, 20000, 76000]
-    print('Using', splits)
-    criterion = SplitCrossEntropyLoss(args.emsize, splits=splits, verbose=False)
-###
+
 if args.cuda:
     model = model.cuda()
-    criterion = criterion.cuda()
-###
-params = list(model.parameters()) + list(criterion.parameters())
-total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in params if x.size())
+total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in model.parameters())
 print('Args:', args)
 print('Model total parameters:', total_params)
 
+criterion = nn.CrossEntropyLoss()
 ###############################################################################
 # Training code
 ###############################################################################
@@ -184,7 +164,8 @@ def evaluate(data_source, batch_size=10):
     for i in range(0, data_source.size(0) - 1, args.bptt):
         data, targets = get_batch(data_source, i, args, evaluation=True)
         output, hidden = model(data, hidden)
-        total_loss += len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets).data
+        output_flat = output.view(-1, ntokens)
+        total_loss += len(data) * criterion(output_flat, targets).data
         hidden = repackage_hidden(hidden)
     return total_loss[0] / len(data_source)
 
@@ -215,7 +196,7 @@ def train():
         optimizer.zero_grad()
 
         output, hidden, rnn_hs, dropped_rnn_hs = model(data, hidden, return_h=True)
-        raw_loss = criterion(model.decoder.weight, model.decoder.bias, output, targets)
+        raw_loss = criterion(output.view(-1, ntokens), targets)
 
         loss = raw_loss
         # Activiation Regularization
@@ -225,7 +206,7 @@ def train():
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-        if args.clip: torch.nn.utils.clip_grad_norm(params, args.clip)
+        if args.clip: torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
         optimizer.step()
 
         total_loss += raw_loss.data
@@ -251,11 +232,10 @@ stored_loss = 100000000
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     optimizer = None
-    # Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
     if args.optimizer == 'sgd':
-        optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wdecay)
     if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wdecay)
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
         train()
