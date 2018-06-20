@@ -1,6 +1,7 @@
 import os
 import torch
 import sys
+import codecs
 from collections import Counter
 
 
@@ -25,7 +26,7 @@ class Dictionary(object):
     def build(self, path):
         assert os.path.exists(path)
         # Add words to the dictionary
-        with open(path, 'r') as f:
+        with codecs.open(path, 'r', 'utf-8') as f:
             tokens = 0
             for line in f:
                 words = line.split() + ['<eos>']
@@ -72,7 +73,7 @@ class Corpus(object):
 
         assert os.path.exists(path)
         # Add words to the dictionary
-        with open(path, 'r') as f:
+        with codecs.open(path, 'r', 'utf-8') as f:
             tokens = 0
             for line in f:
                 words = line.split() + ['<eos>']
@@ -81,7 +82,7 @@ class Corpus(object):
         unk_id = self.dictionary.word2idx.get(self.dictionary.unk_token, -1)
 
         # Tokenize file content
-        with open(path, 'r') as f:
+        with codecs.open(path, 'r', 'utf-8') as f:
             ids = torch.LongTensor(tokens)
             token = 0
             for line in f:
