@@ -11,6 +11,7 @@ import data
 import model
 
 from utils import batchify, get_batch, repackage_hidden
+from adaptive import AdaptiveLogSoftmaxWithLoss
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--data', type=str, default='data/penn/',
@@ -72,6 +73,7 @@ parser.add_argument('--max_vocab', type=int, default=sys.maxsize, help='Maximum 
 parser.add_argument('--unk_token', type=str, default='<unk>', help='UNK token to consider.')
 parser.add_argument('--checkpoint_dir', type=str,  default=None, help='Checkpoint Directory path.')
 parser.add_argument('--checkpoint', action='store_true', help='Store each checkpoint')
+parser.add_argument('--adaptive', action='store_true', help='Use adaptive softmax as last layer. This will disable weight tying.')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -133,23 +135,43 @@ test_data = batchify(corpus.test, test_batch_size, args)
 ###############################################################################
 
 ntokens = len(corpus.dictionary)
-model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
+model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied, args.adaptive)
+###
 if args.resume:
     print('Resuming model ...')
     model_load(args.resume)
+    optimizer.param_groups[0]['lr'] = args.lr
+    model.dropouti, model.dropouth, model.dropout, args.dropoute = args.dropouti, args.dropouth, args.dropout, args.dropoute
     if args.wdrop:
         from weight_drop import WeightDrop
         for rnn in model.rnns:
             if type(rnn) == WeightDrop: rnn.dropout = args.wdrop
             elif rnn.zoneout > 0: rnn.zoneout = args.wdrop
+###
+criterion = nn.CrossEntropyLoss()
+if args.adaptive:
+    cutoffs = [100, 1000, 5000]
+    if ntokens > 500000:
+        # One Billion
+        # This produces fairly even matrix mults for the buckets:
+        # 0: 11723136, 1: 10854630, 2: 11270961, 3: 11219422
+        cutoffs = [4200, 35000, 180000]
+    elif ntokens > 75000:
+        # WikiText-103
+        cutoffs = [2800, 20000, 76000]
+    print('Using', cutoffs)
+    criterion = AdaptiveLogSoftmaxWithLoss(args.nhid, ntokens, cutoffs=cutoffs)
+###
 
 if args.cuda:
     model = model.cuda()
-total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in model.parameters())
+    criterion = criterion.cuda()
+###
+params = list(model.parameters()) + list(criterion.parameters())
+total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in params if x.size())
 print('Args:', args)
 print('Model total parameters:', total_params)
 
-criterion = nn.CrossEntropyLoss()
 ###############################################################################
 # Training code
 ###############################################################################
@@ -163,11 +185,15 @@ def evaluate(data_source, batch_size=10):
     for i in range(0, data_source.size(0) - 1, args.bptt):
         data, targets = get_batch(data_source, i, args, evaluation=True)
         output, hidden = model(data, hidden)
-        output_flat = output.view(-1, ntokens)
-        total_loss += len(data) * criterion(output_flat, targets).data
+        output_flat = output.view(-1, args.nhid) if args.adaptive else output.view(-1, ntokens)
+        if args.adaptive:
+            output, loss = criterion(output_flat, targets)
+        else:
+            loss = criterion(output_flat, targets)
+
+        total_loss += len(data) * loss.data
         hidden = repackage_hidden(hidden)
     return total_loss.item() / len(data_source)
-
 
 def train():
     # Turn on training mode which enables dropout.
@@ -195,7 +221,11 @@ def train():
         optimizer.zero_grad()
 
         output, hidden, rnn_hs, dropped_rnn_hs = model(data, hidden, return_h=True)
-        raw_loss = criterion(output.view(-1, ntokens), targets)
+
+        if args.adaptive:
+            output, raw_loss = criterion(output, targets)
+        else:
+            raw_loss = criterion(output.view(-1, ntokens), targets)
 
         loss = raw_loss
         # Activiation Regularization
@@ -205,7 +235,7 @@ def train():
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-        if args.clip: torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+        if args.clip: torch.nn.utils.clip_grad_norm_(params, args.clip)
         optimizer.step()
 
         total_loss += raw_loss.data
@@ -231,10 +261,11 @@ stored_loss = 100000000
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     optimizer = None
+    # Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
     if args.optimizer == 'sgd':
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wdecay)
+        optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
     if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wdecay)
+        optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
         train()

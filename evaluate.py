@@ -34,18 +34,19 @@ parser.add_argument('--distorted_file', type=str, default='test.txt.deformed-80.
 parser.add_argument('--seed', type=int, default=1111, help='random seed')
 parser.add_argument('--cuda', action='store_true', help='use CUDA')
 parser.add_argument('--max_vocab', type=int, default=sys.maxsize, help='Maximum Vocab to consider.')
-parser.add_argument('--nbest_in', type=str, default='data/nbest_list_example_caps.txt',
+parser.add_argument('--nbest_in', type=str, default='nbest.txt',
                     help='NBest input list.')
-parser.add_argument('--nbest_out', type=str, default='data/nbest_list_example_output.txt',
+parser.add_argument('--nbest_out', type=str, default='nbest_output.txt',
                     help='NBest output list.')
 parser.add_argument('--nbest', type=int, default=200, help='Number of nbest to consider.')
 parser.add_argument('--lower', action='store_true', help='Lower the sentences.')
 parser.add_argument('--report_wer', action='store_true', help='Report WER.')
 parser.add_argument('--report_bleu', action='store_true', help='Report BLEU.')
 parser.add_argument('--oov_penalty', action='store_true', help='OOV Penality for nbest list scoring.')
+parser.add_argument('--adaptive', action='store_true', help='Use adaptive softmax as last layer. This will disable weight tying.')
 args = parser.parse_args()
 
-args.bptt = 140
+args.bptt = 70
 
 # Set the random seed manually for reproducibility.
 torch.manual_seed(args.seed)
@@ -83,7 +84,7 @@ print('Dataset: %s' % args.data)
 print('Vocab Size: %d' % len(corpus.dictionary))
 
 ntokens = len(corpus.dictionary)
-test_batch_size = 1
+test_batch_size = 50
 
 def sent_score(sent):
     model.eval()
@@ -92,10 +93,14 @@ def sent_score(sent):
     data = Variable(sent[:-1].unsqueeze(1), volatile=True)
     target = Variable(sent[1:].view(-1))
     output, hidden = model(data, hidden)
-    loss = float(criterion(model.decoder.weight, model.decoder.bias, output, target).data)
+    output_flat = output.view(-1, model.nhid) if args.adaptive else output.view(-1, ntokens)
+    if args.adaptive:
+        output, loss = criterion(output_flat, target)
+    else:
+        loss = criterion(output_flat, targets)
     if args.oov_penalty:
         loss += sum(map(lambda x: 1 if corpus.dictionary.word2idx[corpus.dictionary.unk_token] == x else 0, sent.tolist()))
-    return loss
+    return loss.data
 
 def entropy(data_source, batch_size=1):
     # Turn on evaluation mode which disables dropout.
@@ -107,27 +112,33 @@ def entropy(data_source, batch_size=1):
     for i in range(0, data_source.size(0) - 1, args.bptt):
         data, targets = get_batch(data_source, i, args, evaluation=True)
         output, hidden = model(data, hidden)
-        total_loss += len(data) * criterion(output.view(-1, ntokens), targets).data
+        output_flat = output.view(-1, model.nhid) if args.adaptive else output.view(-1, ntokens)
+        if args.adaptive:
+            output, loss = criterion(output_flat, targets)
+        else:
+            loss = criterion(output_flat, targets)
+
+        total_loss += len(data) * loss.data
         hidden = repackage_hidden(hidden)
     return total_loss[0]
 
 def log_perplexity(data_source, batch_size=1):
     return entropy(data_source, batch_size)/len(data_source)
 
-def contrastive_log_perplexity(test, test_distorted, true_entropy=None):
-    true_entropy = true_entropy or entropy(test)
-    distorted_entropy = entropy(test_distorted)
-    return (distorted_entropy - true_entropy)/len(test)
+def contrastive_log_perplexity(test, test_distorted, true_entropy=None, test_batch_size=1):
+    true_entropy = true_entropy or entropy(test, test_batch_size)
+    distorted_entropy = entropy(test_distorted, test_batch_size)/len(test)
+    return (distorted_entropy - true_entropy)
 
 def nbest_score(nbest_list_input, nbest_list_output,
                 lower=False, report_wer=False, report_bleu=False):
     nbest_all=[]
-    with open(nbest_list_input, 'r') as input, \
-            open(nbest_list_output, 'w') as output:
+    with open(os.path.join(args.data, nbest_list_input), 'r') as input, \
+            open(os.path.join(args.data, nbest_list_output), 'w') as output:
 
         size=len(input.readlines())
         input.seek(0)
-        for sentences in input: # tqdm(input, total=size):
+        for sentences in tqdm(input, total=size):
             nbest_all.append([])
             for idx, sentence in enumerate(sentences.split('\t')[:args.nbest]):
                 if len(sentence.split()) < 2:
@@ -142,8 +153,12 @@ def nbest_score(nbest_list_input, nbest_list_output,
                 tokenize_sent = corpus.tokenize_sent(sentence)
                 if args.cuda:
                     tokenize_sent = tokenize_sent.cuda()
+
                 score = sent_score(tokenize_sent)
                 nbest_all[-1].append((idx, sentence, score))
+
+            if len(nbest_all[-1]) < 5:
+                del nbest_all[-1]
 
         nbest_sorted = []
         for nbest_batch in nbest_all:
@@ -199,15 +214,14 @@ def sent_wer(s1, s2):
 
     return Lev.distance(''.join(w1), ''.join(w2))
 
-test_data = batchify(corpus.test, 1, args)
-test_data_distorted = batchify(corpus.tokenize(os.path.join(args.data, args.distorted_file)), 1, args)
-
+test_data = batchify(corpus.tokenize(os.path.join(args.data, 'test.txt')), test_batch_size, args)
+test_data_distorted = batchify(corpus.tokenize(os.path.join(args.data, args.distorted_file)), test_batch_size, args)
 original_ent = log_perplexity(test_data, test_batch_size)
 print('=' * 100)
 print('|  Cross Entropy {:5.2f} | Perplexity {:8.2f}'.format(original_ent, math.exp(original_ent)))
 print('=' * 100)
 
-contrastive_ent = contrastive_log_perplexity(test_data, test_data_distorted, original_ent)
+contrastive_ent = contrastive_log_perplexity(test_data, test_data_distorted, original_ent, test_batch_size)
 print('=' * 100)
 print('|  Contrastive Cross Entropy {:5.2f} | Contrastive Perplexity {:8.2f}'.format(contrastive_ent, math.exp(contrastive_ent)))
 print('=' * 100)
