@@ -2,10 +2,7 @@ import sys
 import numpy as np
 import random
 
-def disform_sentences(input_filename, ps=10, pa=10, pd=10):
-    infile = open(input_filename, 'r')
-    output_filename = input_filename + ".deformed-s-%.1f-a-%.1f-d-%.1f" % (ps, pa, pd)
-    outfile = open(output_filename, 'w')
+def disform_sentences(infile, outfile, ps=10, pa=10, pd=10):
     word2idx = {}
     word2count = {}
     idx = 0;
@@ -20,12 +17,12 @@ def disform_sentences(input_filename, ps=10, pa=10, pd=10):
                 idx += 1
             word2count[word] += 1
 
-    V = word2idx.keys()
+    V = list(word2idx.keys())
     vsize = len(V)
 
     total_count = sum(word2count.values())
     counts = [0] * vsize
-    for word,idx in word2idx.iteritems():
+    for word,idx in word2idx.items():
         counts[word2idx[word]] = word2count[word]/float(total_count)
 
     ps = float(ps)/100
@@ -66,14 +63,18 @@ def disform_sentences(input_filename, ps=10, pa=10, pd=10):
 #        print newline
 #        print ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
         outfile.write(newline + "\n")
-    return output_filename
 
 
 if __name__ == "__main__":
     argc = len(sys.argv)
+    input_filename = sys.argv[1]
+    output_filename = input_filename + ".deformed-s-%.1f-a-%.1f-d-%.1f" % (ps, pa, pd)
+    infile = open(input_filename, 'r')
+    outfile = open(output_filename, 'w')
+
     if argc == 5:
-        disform_sentences(sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]))
+        disform_sentences(infile, outfile, float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]))
     elif argc == 4:
-        disform_sentences(sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[3]))
+        disform_sentences(infile, outfile, output_filename, float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[3]))
     else:
-        disform_sentences(sys.argv[1])
+        disform_sentences(infile, outfile)

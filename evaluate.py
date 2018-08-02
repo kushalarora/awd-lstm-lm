@@ -10,11 +10,14 @@ import argparse
 import torch
 import Levenshtein as Lev
 from torch.autograd import Variable
+from deform_test import disform_sentences
 
 import data
 import sys
 import os
 import math
+import numpy
+import tempfile
 
 from utils import batchify, get_batch, repackage_hidden
 from Bleu import score_corpus
@@ -29,8 +32,6 @@ parser.add_argument('--model', type=str, default='LSTM',
                     help='type of recurrent net (LSTM, QRNN)')
 parser.add_argument('--checkpoint', type=str, default='./model.pt',
                     help='model checkpoint to use')
-parser.add_argument('--distorted_file', type=str, default='test.txt.deformed-80.0-10.0-10.0',
-                    help='distorted file for test.txt.')
 parser.add_argument('--seed', type=int, default=1111, help='random seed')
 parser.add_argument('--cuda', action='store_true', help='use CUDA')
 parser.add_argument('--max_vocab', type=int, default=sys.maxsize, help='Maximum Vocab to consider.')
@@ -44,6 +45,10 @@ parser.add_argument('--report_wer', action='store_true', help='Report WER.')
 parser.add_argument('--report_bleu', action='store_true', help='Report BLEU.')
 parser.add_argument('--oov_penalty', action='store_true', help='OOV Penality for nbest list scoring.')
 parser.add_argument('--adaptive', action='store_true', help='Use adaptive softmax as last layer. This will disable weight tying.')
+parser.add_argument('--skip_nbest', action='store_true', help='Dont do nbest reranking.')
+parser.add_argument('--distp', type=int, default=15, help='Distortion % to introduce.')
+parser.add_argument('--distn', type=int, default=25, help='Number of samples for cont entropy.')
+args = parser.parse_args()
 args = parser.parse_args()
 
 args.bptt = 70
@@ -214,17 +219,26 @@ def sent_wer(s1, s2):
 
     return Lev.distance(''.join(w1), ''.join(w2))
 
-test_data = batchify(corpus.tokenize(os.path.join(args.data, 'test.txt')), test_batch_size, args)
-test_data_distorted = batchify(corpus.tokenize(os.path.join(args.data, args.distorted_file)), test_batch_size, args)
+test_file = os.path.join(args.data, 'test.txt')
+test_data = batchify(corpus.tokenize(test_file), test_batch_size, args)
 original_ent = log_perplexity(test_data, test_batch_size)
 print('=' * 100)
 print('|  Cross Entropy {:5.2f} | Perplexity {:8.2f}'.format(original_ent, math.exp(original_ent)))
 print('=' * 100)
 
-contrastive_ent = contrastive_log_perplexity(test_data, test_data_distorted, original_ent, test_batch_size)
+cont_ent = numpy.zeros(args.distn)
+for i in range(args.distn):
+    distortion_file = tempfile.NamedTemporaryFile(mode='w')
+    ps= pa = pd = args.distp/3.0
+    disform_sentences(open(test_file), distortion_file, ps, pa, pd)
+
+    test_data_distorted = batchify(corpus.tokenize(distortion_file.name), test_batch_size, args)
+    cont_ent[i] = contrastive_log_perplexity(test_data, test_data_distorted, original_ent, test_batch_size)
+    distortion_file.close()
 print('=' * 100)
-print('|  Contrastive Cross Entropy {:5.2f} | Contrastive Perplexity {:8.2f}'.format(contrastive_ent, math.exp(contrastive_ent)))
+print('|  Contrastive Cross Entropy {:5.2f}({:3.2f}) | Contrastive Perplexity {:8.2f}({:3.2f})'.format(cont_ent.mean(), cont_ent.std(), numpy.exp(cont_ent).mean(), numpy.exp(cont_ent).std()))
 print('=' * 100)
 
-nbest_score(args.nbest_in, args.nbest_out, lower=args.lower,
-            report_wer=args.report_wer, report_bleu=args.report_bleu)
+if not args.skip_nbest:
+    nbest_score(args.nbest_in, args.nbest_out, lower=args.lower,
+                report_wer=args.report_wer, report_bleu=args.report_bleu)
